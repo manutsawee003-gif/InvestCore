@@ -4,23 +4,23 @@ import streamlit as st
 
 from rag_service import RAGService
 
-DATASET = Path(__file__).resolve().parent / "data" / "Dataset_หุ้นพื้นฐาน.xlsx"
+DATASET = Path(__file__).resolve().parent / "data" / "Dataset_หุ้นพื้นฐาน_1200_QA.xlsx"
 
 st.set_page_config(page_title="InvestCore", page_icon="📈")
 st.title("InvestCore")
 st.caption("แชตบอตให้ความรู้พื้นฐานด้านหุ้นและตลาดทุน — เริ่มต้นเข้าใจหุ้น จากแก่นความรู้ที่ถูกต้อง")
-st.info("ตอบเฉพาะข้อมูลจาก Dataset_หุ้นพื้นฐาน.xlsx และไม่ใช่คำแนะนำซื้อขายหลักทรัพย์")
+st.info("ตอบเฉพาะข้อมูลจาก Dataset_หุ้นพื้นฐาน_1200_QA.xlsx และไม่ใช่คำแนะนำซื้อขายหลักทรัพย์")
 
 @st.cache_resource
 def get_service() -> RAGService:
     return RAGService(DATASET)
 
-WELCOME = "สวัสดีค่ะ ฉันคือ InvestCore สอบถามความรู้พื้นฐานด้านหุ้นและตลาดทุนได้เลยค่ะ"
+WELCOME = "สวัสดีครับ ผม InvestCore ยินดีช่วยตอบคำถามพื้นฐานเรื่องหุ้นและตลาดทุนครับ ลองถามได้ เช่น “หุ้นคืออะไร”"
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": WELCOME}]
 
 with st.sidebar:
-    st.write("แหล่งข้อมูล: Excel 800 Q&A")
+    st.write("แหล่งข้อมูล: Excel 1,200 Q&A")
     if st.button("เริ่มบทสนทนาใหม่"):
         st.session_state.messages = [{"role": "assistant", "content": WELCOME}]
         st.rerun()

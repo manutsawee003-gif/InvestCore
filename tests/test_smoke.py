@@ -4,7 +4,7 @@ from pathlib import Path
 from rag_service import RAGService
 from retriever import HybridRetriever, normalize_text
 
-DATASET = Path(__file__).resolve().parents[1] / "data" / "Dataset_หุ้นพื้นฐาน.xlsx"
+DATASET = Path(__file__).resolve().parents[1] / "data" / "Dataset_หุ้นพื้นฐาน_1200_QA.xlsx"
 
 
 class RAGSmokeTests(unittest.TestCase):
@@ -13,7 +13,7 @@ class RAGSmokeTests(unittest.TestCase):
         cls.retriever = HybridRetriever.from_excel(DATASET)
 
     def test_loads_all_records(self):
-        self.assertEqual(len(self.retriever.records), 800)
+        self.assertEqual(len(self.retriever.records), 1200)
 
     def test_explicit_record_id_is_honoured(self):
         self.assertEqual(self.retriever.search("ID 1")[0].record.record_id, "1")
@@ -29,9 +29,11 @@ class RAGSmokeTests(unittest.TestCase):
 
     def test_smalltalk_does_not_retrieve_or_call_llm(self):
         service = RAGService(DATASET)
-        _, hits, route = service.answer("สวัสดี")
-        self.assertEqual(route, "smalltalk")
-        self.assertEqual(hits, [])
+        for greeting in ("สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ!", "หวัดดีครับ", "hello"):
+            with self.subTest(greeting=greeting):
+                _, hits, route = service.answer(greeting)
+                self.assertEqual(route, "smalltalk")
+                self.assertEqual(hits, [])
 
 
 if __name__ == "__main__":

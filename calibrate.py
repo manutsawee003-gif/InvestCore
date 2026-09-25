@@ -4,7 +4,7 @@ from statistics import mean
 
 from retriever import HybridRetriever
 
-DATASET = Path(__file__).resolve().parent / "data" / "Dataset_หุ้นพื้นฐาน.xlsx"
+DATASET = Path(__file__).resolve().parent / "data" / "Dataset_หุ้นพื้นฐาน_1200_QA.xlsx"
 IN_SCOPE = ["Mindset คืออะไร", "ตลาดหลักทรัพย์คืออะไร"]
 OUT_OF_SCOPE = ["วันนี้ฝนตกไหม", "วิธีทำอาหาร"]
 GAPS = ["หุ้น AOT วันนี้ราคาเท่าไร", "ควรซื้อหุ้นตัวไหน"]

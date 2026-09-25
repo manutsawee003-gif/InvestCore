@@ -23,11 +23,24 @@ def setting(name: str, default: str = "") -> str:
     return str(value or default)
 
 REFUSAL = "ขออภัยค่ะ ไม่พบข้อมูลที่ยืนยันได้ในชุดข้อมูล InvestCore จึงไม่สามารถตอบนอกเหนือจากชุดข้อมูลนี้ได้ค่ะ"
-GREETING = "สวัสดีค่ะ ฉันคือ InvestCore แชตบอตให้ความรู้พื้นฐานด้านหุ้นและตลาดทุน ฉันตอบจากชุดข้อมูลที่กำหนดเท่านั้นค่ะ"
+GREETING = (
+    "สวัสดีครับ ผม InvestCore ยินดีช่วยตอบคำถามพื้นฐานเรื่องหุ้นและตลาดทุนครับ "
+    "ลองถามได้ เช่น “หุ้นคืออะไร” หรือ “ตลาดหลักทรัพย์คืออะไร”"
+)
 
 
 def is_smalltalk(question: str) -> bool:
-    return bool(re.fullmatch(r"\s*(สวัสดี|หวัดดี|ดี|hello|hi|คุณทำอะไรได้บ้าง|ช่วยอะไรได้บ้าง)[!?. ]*", question.lower()))
+    """Handle greetings locally so they never fall through to RAG refusal."""
+    return bool(re.fullmatch(
+        r"\s*(?:"
+        r"สวัสดี(?:ครับ|ค่ะ|คะ|ครับผม)?|"
+        r"หวัดดี(?:ครับ|ค่ะ|คะ|ครับผม)?|"
+        r"ดี(?:ครับ|ค่ะ|คะ)?|"
+        r"hello|hi|hey|"
+        r"คุณทำอะไรได้บ้าง|ช่วยอะไรได้บ้าง"
+        r")[!?.… ]*",
+        question.lower(),
+    ))
 
 
 class RAGService:
