@@ -1,17 +1,13 @@
-"""Local hybrid RAG retrieval. The Excel workbook is the only knowledge source."""
+"""Local hybrid retrieval over page-addressable PDF text."""
 from __future__ import annotations
 
 import math
 import re
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
 
-import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
-
-TEXT_COLUMNS = ("Question", "Search_Aliases", "Answer", "Source_Excerpt", "Search_Text")
 
 
 def normalize_text(value: str) -> str:
@@ -43,6 +39,7 @@ class Record:
     page: str
     excerpt: str
     search_text: str
+    source_page: str = ""
 
 
 @dataclass(frozen=True)
@@ -56,10 +53,10 @@ class Hit:
 class HybridRetriever:
     def __init__(self, records: list[Record]) -> None:
         if not records:
-            raise ValueError("ไม่พบรายการ Q&A ในแผ่นงาน Dataset")
+            raise ValueError("ไม่พบข้อความที่ค้นหาได้จากคู่มือ PDF")
         self.records = records
         texts = [normalize_text(r.search_text) for r in records]
-        # Vector search (the dense arm). Local vectors keep dataset content on this machine.
+        # Character n-grams handle Thai without relying on exact word spacing.
         self.vectorizer = TfidfVectorizer(analyzer="char", ngram_range=(2, 5), min_df=1, sublinear_tf=True, lowercase=False)
         self.matrix = normalize(self.vectorizer.fit_transform(texts))
         self.docs = [char_tokens(t) for t in texts]
@@ -69,25 +66,6 @@ class HybridRetriever:
         for doc in self.docs:
             for token in set(doc):
                 self.df[token] = self.df.get(token, 0) + 1
-
-    @classmethod
-    def from_excel(cls, path: str | Path) -> "HybridRetriever":
-        workbook = pd.ExcelFile(path)
-        sheet = next((s for s in workbook.sheet_names if "Dataset" in s), None)
-        if sheet is None:
-            raise ValueError("ไม่พบแผ่นงาน Dataset ในไฟล์ Excel")
-        frame = pd.read_excel(path, sheet_name=sheet).fillna("")
-        required = {"ID", "Question", "Answer", "Source"}
-        missing = required - set(frame.columns)
-        if missing:
-            raise ValueError(f"คอลัมน์ที่จำเป็นหายไป: {', '.join(sorted(missing))}")
-        records = []
-        for _, row in frame.iterrows():
-            content = " | ".join(str(row.get(c, "")) for c in TEXT_COLUMNS)
-            records.append(Record(str(row["ID"]), str(row["Question"]), str(row["Answer"]),
-                                  str(row.get("Keywords", "")), str(row["Source"]), str(row.get("Page", "")),
-                                  str(row.get("Source_Excerpt", "")), content))
-        return cls(records)
 
     def _bm25(self, question: str) -> list[float]:
         query = char_tokens(question)
@@ -107,7 +85,7 @@ class HybridRetriever:
             scores.append(score)
         return scores
 
-    def search(self, question: str, top_k: int = 4) -> list[Hit]:
+    def search(self, question: str, top_k: int = 24) -> list[Hit]:
         q = self.vectorizer.transform([normalize_text(question)])
         dense = (self.matrix @ q.T).toarray().ravel()
         bm25 = self._bm25(question)
@@ -118,26 +96,29 @@ class HybridRetriever:
             rrf[index] = rrf.get(index, 0) + 1 / (60 + rank)
         for rank, index in enumerate(bm25_rank[:30], 1):
             rrf[index] = rrf.get(index, 0) + 1 / (60 + rank)
-        # Preserve the two strongest vector matches so RRF cannot bury a semantic result.
-        chosen = set(dense_rank[:2]) | set(sorted(rrf, key=rrf.get, reverse=True)[:top_k])
-        ranking = sorted(chosen, key=lambda i: rrf.get(i, 0), reverse=True)[:max(top_k, 2)]
-        # A user-supplied dataset record ID is an explicit source selection.
-        requested_ids = set(re.findall(r"(?:\bID|ข้อ)\s*[:#-]?\s*(\d{1,4})\b", question, flags=re.IGNORECASE))
-        exact_indexes = [i for i, record in enumerate(self.records) if record.record_id.upper() in requested_ids]
-        # A complete query equal to an approved dataset keyword is in scope even
-        # when it is very short (for example, "หุ้น").  Rank its records first.
-        normalized_question = normalize_text(question)
-        keyword_indexes = [i for i, record in enumerate(self.records) if normalize_text(record.keywords) == normalized_question]
-        keyword_indexes.sort(key=lambda i: ("คืออะไร" not in self.records[i].question, -dense[i]))
-        priority = exact_indexes + [i for i in keyword_indexes if i not in exact_indexes]
-        ranking = (priority + [i for i in ranking if i not in priority])[:max(top_k, 2)]
-        return [Hit(self.records[i], float(dense[i]), float(bm25[i]), rrf.get(i, 0.0)) for i in ranking]
+        # First collect a wider set of passages. The LLM reranker needs the
+        # right page to be present even when an adjacent chunk scores higher.
+        pool_size = max(80, top_k * 4)
+        chosen = set(dense_rank[:pool_size]) | set(sorted(rrf, key=rrf.get, reverse=True)[:pool_size])
 
-    def exact_id_exists(self, question: str) -> bool:
-        ids = re.findall(r"(?:\bID|ข้อ)\s*[:#-]?\s*(\d{1,4})\b", question, flags=re.IGNORECASE)
-        known = {r.record_id.upper() for r in self.records}
-        return any(i.upper() in known for i in ids)
+        # The source PDFs are paginated books. Rank at page level so several
+        # useful passages on one page reinforce each other instead of returning
+        # multiple near-duplicate chunks as separate candidates.
+        pages: dict[tuple[str, str], list[int]] = {}
+        for index in chosen:
+            record = self.records[index]
+            pages.setdefault((record.source, record.page), []).append(index)
 
-    def exact_keyword_exists(self, question: str) -> bool:
-        normalized_question = normalize_text(question)
-        return bool(normalized_question) and any(normalize_text(r.keywords) == normalized_question for r in self.records)
+        page_hits: list[tuple[float, int]] = []
+        for indexes in pages.values():
+            indexes.sort(key=lambda i: rrf.get(i, 0.0), reverse=True)
+            weights = (1.0, 0.18, 0.08)
+            page_score = sum(weight * rrf.get(i, 0.0) for weight, i in zip(weights, indexes))
+            # Return the most relevant passage from the page, while its score
+            # reflects corroborating matches elsewhere on that same page.
+            page_hits.append((page_score, indexes[0]))
+        page_hits.sort(key=lambda item: item[0], reverse=True)
+        return [
+            Hit(self.records[index], float(dense[index]), float(bm25[index]), float(page_score))
+            for page_score, index in page_hits[:top_k]
+        ]

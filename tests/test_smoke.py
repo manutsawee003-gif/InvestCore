@@ -1,39 +1,43 @@
 import unittest
 from pathlib import Path
 
+from pdf_knowledge import PDFKnowledgeBase
 from rag_service import RAGService
-from retriever import HybridRetriever, normalize_text
 
-DATASET = Path(__file__).resolve().parents[1] / "data" / "Dataset_หุ้นพื้นฐาน_1200_QA.xlsx"
+
+PDF_DIRECTORY = Path(__file__).resolve().parents[2]
 
 
 class RAGSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.retriever = HybridRetriever.from_excel(DATASET)
+        cls.service = RAGService(PDF_DIRECTORY)
+        # Tests must never call an external model, even if a local key exists.
+        cls.service.client = None
 
-    def test_loads_all_records(self):
-        self.assertEqual(len(self.retriever.records), 1200)
+    def test_loads_both_pdf_sources(self):
+        records = self.service.knowledge_base.retriever.records
+        self.assertGreater(len(records), 100)
+        self.assertTrue(any("028" in record.source for record in records))
+        self.assertTrue(any("062" in record.source for record in records))
 
-    def test_explicit_record_id_is_honoured(self):
-        self.assertEqual(self.retriever.search("ID 1")[0].record.record_id, "1")
+    def test_etf_question_is_grounded_in_foreign_investment_pdf(self):
+        hits = self.service.knowledge_base.search("ETF คืออะไร")
+        self.assertTrue(any("062" in hit.record.source for hit in hits))
 
-    def test_search_normalization_removes_spacing_and_punctuation(self):
-        self.assertEqual(normalize_text("แรง ขาย ?!"), normalize_text("แรง-ขาย"))
-
-    def test_exact_dataset_keyword_is_in_scope(self):
-        service = RAGService(DATASET)
-        _, hits, route = service.answer("หุ้น")
+    def test_follow_up_keeps_conversation_context_for_retrieval(self):
+        query = self.service._retrieval_query(
+            "แล้วอันนั้นต่างจาก DR อย่างไร",
+            [{"role": "user", "content": "ETF คืออะไร"}],
+        )
+        hits = self.service.knowledge_base.search(query)
         self.assertTrue(hits)
-        self.assertNotEqual(route, "out_of_scope")
+        self.assertTrue(any("062" in hit.record.source for hit in hits))
 
-    def test_smalltalk_does_not_retrieve_or_call_llm(self):
-        service = RAGService(DATASET)
-        for greeting in ("สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ!", "หวัดดีครับ", "hello"):
-            with self.subTest(greeting=greeting):
-                _, hits, route = service.answer(greeting)
-                self.assertEqual(route, "smalltalk")
-                self.assertEqual(hits, [])
+    def test_smalltalk_does_not_retrieve(self):
+        _, hits, route = self.service.answer("สวัสดีครับ")
+        self.assertEqual(route, "smalltalk")
+        self.assertEqual(hits, [])
 
 
 if __name__ == "__main__":

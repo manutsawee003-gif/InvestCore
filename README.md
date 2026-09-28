@@ -1,21 +1,33 @@
-# InvestCore — Typhoon RAG Chatbot
+# InvestCore — PDF-grounded investment education chatbot
 
-InvestCore คือแชตบอตให้ความรู้พื้นฐานด้านหุ้นและตลาดทุน: “เริ่มต้นเข้าใจหุ้น จากแก่นความรู้ที่ถูกต้อง” โดยอ่านความรู้จาก `Dataset_หุ้นพื้นฐาน_1200_QA.xlsx` เพียงไฟล์เดียว ไม่ส่งทั้ง Excel ให้โมเดลทุกครั้ง แต่ค้นคืน Q&A ที่เกี่ยวข้องด้วย hybrid RAG (vector + BM25 + RRF) ก่อนส่งเฉพาะผลลัพธ์ 2–4 รายการให้ Typhoon เรียบเรียงคำตอบ
+InvestCore answers from these two supplied SET e-books only:
 
-## เริ่มใช้งาน
+- `TSI_eBook_028_Inv_คู่มือ21-DayChallenge(1).pdf`
+- `TSI_eBook_062_Inv_Playbook-21-Day-Challenge-Foreign-Investment.pdf`
 
-1. คัดลอก `.env.example` เป็น `.env` แล้วกำหนด `TYPHOON_API_KEY` ของตนเอง (ห้ามวาง key ในโค้ดหรือส่งขึ้น Git)
-2. ติดตั้ง: `py -m pip install -r requirements.txt`
-3. รัน: `py -m streamlit run app.py`
+The 300-question Excel workbook is an evaluation set. It is not loaded into
+the chatbot and cannot influence an answer.
 
-หากยังไม่มี API key แอปยังค้นข้อมูลได้ และจะแสดงคำตอบตรงจาก Excel เป็น fallback ที่ปลอดภัย
+## Run locally
 
-## Guardrails
+1. Copy `.env.example` to `.env` and set `TYPHOON_API_KEY`.
+2. Install packages: `py -m pip install -r requirements.txt`
+3. Run the app: `py -m streamlit run app.py`
 
-- คำถามทั่วไปตอบแบบข้อความตายตัวโดยไม่เรียก LLM
-- คะแนน vector ต่ำกว่า `MIN_DENSE_SIM` จะปฏิเสธก่อนเรียก Typhoon
-- Typhoon ได้รับเฉพาะ Q&A ที่ค้นเจอและถูกสั่งให้ตอบจาก context เท่านั้น
-- API ล่มหรือคำตอบว่าง จะคืนคำตอบจาก Excel พร้อม ID/หน้าอ้างอิง
-- ทุกคำตอบที่ผ่าน RAG มี citation ของ `ID` และ `Source`
+The searchable knowledge file is
+`data/Datasetหุ้น_ครบทุกหน้า.md`, containing pages 1–134 in order. Pages 1–60
+map to PDF 028; pages 61–134 map to PDF 062. The two original PDFs must remain
+in the parent `Chatbot InvestCore` folder so page references can be mapped back
+to each original volume.
 
-ก่อนใช้งานจริง ให้ทีมเจ้าของข้อมูลเพิ่มชุดคำถามประเมินอย่างน้อยกลุ่มละ 10 ข้อใน `calibrate.py` และเลือก threshold จากผลจริง ไม่ควรถือค่าเริ่มต้นเป็นค่าที่ผ่านการรับรอง
+## Answer policy
+
+- Answers show a short interpretation and cite the combined PDF page from
+  1–134, with the corresponding page in the original PDF in parentheses. The
+  retrieved passage is available in a collapsible control.
+- The chatbot does not recommend a specific security to buy, sell, or hold.
+- Investment questions outside the two books receive a scope-aware response.
+- The most recent chat turns are used to resolve follow-up questions.
+
+If retrieval or source verification is unavailable, InvestCore declines to
+summarize rather than show a possibly unrelated passage as the answer.
