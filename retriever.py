@@ -21,6 +21,19 @@ def normalize_text(value: str) -> str:
     return re.sub(r"[^\w\u0e00-\u0e7f]", "", text)
 
 
+def contains_term(text: str, term: str) -> bool:
+    """Match an English acronym/word as a whole, while allowing Thai adjacency."""
+    term = term.strip()
+    if not term:
+        return False
+    pattern = re.escape(term)
+    if term[0].isascii() and term[0].isalnum():
+        pattern = r"(?<![a-zA-Z0-9])" + pattern
+    if term[-1].isascii() and term[-1].isalnum():
+        pattern += r"(?![a-zA-Z0-9])"
+    return bool(re.search(pattern, text, re.IGNORECASE))
+
+
 def char_tokens(value: str, width: int = 3) -> list[str]:
     """Character tokens work for Thai without requiring a word-segmentation service."""
     text = re.sub(r"\s+", "", normalize_text(value))

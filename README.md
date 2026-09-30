@@ -14,11 +14,10 @@ the chatbot and cannot influence an answer.
 2. Install packages: `py -m pip install -r requirements.txt`
 3. Run the app: `py -m streamlit run app.py`
 
-The searchable knowledge file is
-`data/Datasetหุ้น_ครบทุกหน้า.md`, containing pages 1–134 in order. Pages 1–60
-map to PDF 028; pages 61–134 map to PDF 062. The two original PDFs must remain
-in the parent `Chatbot InvestCore` folder so page references can be mapped back
-to each original volume.
+The searchable knowledge file is `data/Datasetหุ้น_ครบทุกหน้า.md`, containing
+pages 1–134 in order. The combined `Datasetหุ้น.pdf` is included in this
+repository so page references can be checked in local and cloud deployments.
+See `DEPLOY.md` for the current Streamlit Community Cloud steps.
 
 ## Answer policy
 

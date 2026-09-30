@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from pdf_knowledge import PDFKnowledgeBase, page_reference
-from retriever import Hit
+from retriever import Hit, contains_term, normalize_text
 
 
 def setting(name: str, default: str = "") -> str:
@@ -46,18 +46,27 @@ class RAGService:
     def answer(self, question: str, history: Iterable[dict[str, str]] = ()) -> tuple[str, list[Hit], str]:
         if is_smalltalk(question):
             return GREETING, [], "smalltalk"
-        if re.sub(r"\s+", "", question.lower()) in {"ความเสี่ยง", "การลงทุน", "หุ้น", "กองทุน"}:
-            return "คำนี้มีหลายหัวข้อในคู่มือครับ กรุณาระบุเพิ่มอีกนิด เช่น ความเสี่ยงจากค่าเงิน, ความเสี่ยงของ ETF, ความเสี่ยงของ DW หรือความเสี่ยงจากการลงทุนต่างประเทศ", [], "needs_clarification"
+        if normalize_text(question) in {"ดีไหม", "อันนี้", "อันนั้น", "อย่างไร", "ยังไง"} and (not list(history) or normalize_text(question) == "ดีไหม"):
+            return "หมายถึงหัวข้อใดในคู่มือครับ? กรุณาระบุชื่อเรื่องหรือคำที่สนใจ", [], "needs_clarification"
+        term = self.knowledge_base.topic_term(question)
+        if term and normalize_text(term) in {"ความเสี่ยง", "การลงทุน", "หุ้น", "กองทุน"}:
+            options = self.knowledge_base.clarification_options(term)
+            if len(options) > 1:
+                return f"หมายถึงหัวข้อใดครับ: {', '.join(options[:4])}?", [], "needs_clarification"
+            return "หัวข้อนี้มีหลายส่วนในคู่มือครับ กรุณาระบุเรื่องที่สนใจให้เฉพาะขึ้น", [], "needs_clarification"
         # Prior user questions can resolve follow-ups; prior assistant prose is
         # never used as retrieval evidence or as a source of facts.
         history_list = [entry for entry in history if entry.get("role") == "user"][-3:]
         hits = self.knowledge_base.search(self._retrieval_query(question, history_list))
-        if not hits or hits[0].dense_score < self.threshold:
+        exact_heading = bool(term and hits and self.knowledge_base.has_exact_heading(hits[0], term))
+        if term and hits and not any(contains_term(hit.record.answer, term) or self.knowledge_base.has_exact_heading(hit, term) for hit in hits[:5]):
+            return self._out_of_scope(question), [], "out_of_scope"
+        if not hits or (hits[0].dense_score < self.threshold and not exact_heading):
             return self._out_of_scope(question), [], "out_of_scope"
         if self.client is None:
             return "ระบบตรวจสอบหลักฐานจากคู่มือยังไม่พร้อม จึงขอไม่สรุปคำตอบเพื่อป้องกันการอ้างอิงคลาดเคลื่อนครับ", [], "no_api_key"
         try:
-            selected = self._select_evidence(question, hits, history_list)
+            selected = hits[0] if exact_heading and self.knowledge_base.has_definition(hits[0], term) else self._select_evidence(question, hits, history_list)
             if selected is None:
                 return "ยังไม่พบข้อความในคู่มือที่ตอบคำถามนี้ได้ตรงพอครับ ลองระบุหัวข้อหรือใช้คำเฉพาะจากหน้าที่กำลังอ่าน แล้วผมจะค้นจาก PDF ทั้งสองเล่มให้อีกครั้ง", [], "no_matching_evidence"
             hits = [selected]
@@ -103,6 +112,7 @@ class RAGService:
             for index, hit in enumerate(candidates, start=1)
         )
         system = """เลือกหลักฐานจากคู่มือ PDF ที่ตรงคำถามที่สุด ห้ามตอบคำถามเอง
+คำถามสั้นที่เป็นชื่อหัวข้อให้ตีความว่าผู้ใช้ต้องการคำอธิบายหรือความหมายของหัวข้อนั้น
 เลือกเฉพาะข้อความที่ตอบสิ่งที่ผู้ใช้ถามโดยตรง ไม่ใช่แค่กล่าวถึงคำเดียวกัน
 ถ้าถามว่า “คืออะไร” ข้อความต้องอธิบายความหมายหรือแนวคิดนั้น ถ้าถามผลกระทบ ข้อความต้องบอกผลกระทบ
 ข้อความที่เพียงบอกว่าใครรับความเสี่ยงได้ หรือแค่ลิสต์ชื่อความเสี่ยง ไม่ใช่คำตอบของคำถามว่า “ความเสี่ยงคืออะไร”
@@ -125,12 +135,11 @@ class RAGService:
 
     @staticmethod
     def _retrieval_query(question: str, history: list[dict[str, str]]) -> str:
-        if not history:
+        # Use previous turns only for explicit references to the current topic.
+        if not history or not re.search(r"อันนี้|อันนั้น|เรื่องนั้น|เมื่อกี้|ข้างต้น|แล้ว.*ล่ะ", question):
             return question
-        recent = " ".join(entry.get("content", "") for entry in history[-2:])
-        # Keep the current turn dominant; history only resolves phrases such as
-        # “แล้วอันนั้นล่ะ”.
-        return f"{question} {question} บริบทคำถามก่อนหน้า: {recent}"
+        recent = history[-1].get("content", "")
+        return f"{question} {recent}"
 
     @staticmethod
     def _is_investment_related(question: str) -> bool:

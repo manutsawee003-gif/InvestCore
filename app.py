@@ -12,6 +12,7 @@ if not (PDF_DIRECTORY / "Datasetหุ้น.pdf").exists():
 
 st.set_page_config(page_title="InvestCore", page_icon="📈")
 st.title("InvestCore")
+st.caption("fix 30/9/26")
 st.caption("แชตบอตความรู้จากคู่มือ SET สองเล่ม โดยค้นจาก Markdown ครบ 134 หน้า")
 st.info("เลขหน้าอ้างอิงใช้หน้า PDF รวม 1–134 พร้อมเลขหน้าในไฟล์ต้นฉบับ เพื่อเปิดตรวจได้ตรงกัน")
 
