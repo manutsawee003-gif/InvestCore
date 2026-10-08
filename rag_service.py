@@ -38,6 +38,9 @@ class RAGService:
         load_dotenv()
         self.knowledge_base = PDFKnowledgeBase(pdf_directory)
         # A separate setting prevents the old Excel-RAG threshold from carrying over.
+        # Keep this separate from the legacy Excel-RAG setting (MIN_DENSE_SIM).
+        # The old value is calibrated on a different corpus and rejects valid
+        # passages in this page-level PDF knowledge base.
         self.threshold = float(setting("MIN_PDF_DENSE_SIM", "0.05"))
         key = setting("TYPHOON_API_KEY")
         self.client = OpenAI(api_key=key, base_url=setting("TYPHOON_BASE_URL", "https://api.opentyphoon.ai/v1")) if key else None

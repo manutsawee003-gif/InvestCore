@@ -103,6 +103,11 @@ class PDFKnowledgeBase:
         source_markdown = Path(__file__).resolve().parent / "data" / "Datasetหุ้น_ครบทุกหน้า.md"
         if not source_markdown.exists():
             raise FileNotFoundError("The page-by-page Datasetหุ้น_ครบทุกหน้า.md was not found")
+        # Prefer the OCR-enriched file when it has been generated. It keeps the
+        # same page mapping, while making image-only PDF pages retrievable.
+        ocr_markdown = source_markdown.with_name("knowledge_ocr.md")
+        if ocr_markdown.exists():
+            source_markdown = ocr_markdown
         records = records_from_markdown(source_markdown, paths)
         self.retriever = HybridRetriever(records)
         foreign_records = [record for record in records if "062" in record.source]

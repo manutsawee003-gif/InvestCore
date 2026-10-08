@@ -1,4 +1,7 @@
 .env
+tmp_ocr.out.log
+tmp_ocr.err.log
+data/tessdata/
 .streamlit/secrets.toml
 __pycache__/
 .pytest_cache/
