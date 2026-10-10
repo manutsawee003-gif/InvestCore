@@ -1,6 +1,6 @@
 # Deploy InvestCore บน Streamlit Community Cloud
 
-โปรเจกต์นี้ใช้ `app.py` เป็นหน้าเว็บ, `data/Datasetหุ้น_ครบทุกหน้า.md` เป็นฐานค้นหา และ `Datasetหุ้น.pdf` เพื่อยืนยันจำนวนหน้าและสร้างอ้างอิง ทั้งสองไฟล์ข้อมูลต้องอยู่ใน repository ตามตำแหน่งปัจจุบัน
+โปรเจกต์นี้ใช้ `app.py` เป็นหน้าเว็บ, `data/knowledge.md` เป็นฐานความรู้ (สร้างจาก `Datasetหุ้น.pdf` ด้วย `build_knowledge.py`) ไฟล์นี้ต้องอยู่ใน repository
 
 ## 1. ส่งโค้ดล่าสุดขึ้น GitHub
 
@@ -8,8 +8,8 @@ Repository นี้ตั้ง `origin` ไปที่ `https://github.com/ma
 
 ```powershell
 git status
-git add app.py pdf_knowledge.py rag_service.py retriever.py tests DEPLOY.md README.md STREAMLIT_SECRETS.example.toml
-git commit -m "Improve topic retrieval and deployment guide"
+git add app.py build_knowledge.py evaluate.py pdf_knowledge.py rag_service.py retriever.py requirements.txt tests data/knowledge.md data/ocr_pages DEPLOY.md README.md STREAMLIT_SECRETS.example.toml .env.example
+git commit -m "Rebuild knowledge base with Typhoon OCR and new retrieval"
 git push origin main
 ```
 
@@ -31,13 +31,12 @@ git push origin main
 TYPHOON_API_KEY = "YOUR_REAL_KEY"
 TYPHOON_BASE_URL = "https://api.opentyphoon.ai/v1"
 TYPHOON_MODEL = "typhoon-v2.5-30b-a3b-instruct"
-MIN_PDF_DENSE_SIM = "0.05"
 ```
 
 หาก deploy ไปแล้ว ให้เปิด App settings > Secrets เพื่อเพิ่มหรือแก้ค่าได้ ไม่ต้องใส่ key ใน GitHub
 
 ## 4. ตรวจหลัง deploy
 
-ลองถาม `mindset`, `mindset คืออะไร`, `ETF คืออะไร`, `ดีไหม` และคำที่ไม่มีในคู่มือ ผลสองคำแรกควรอ้างอิง `Datasetหุ้น.pdf` หน้า 11; `ดีไหม` ควรถามกลับ ตรวจ Cloud logs หากแอปไม่เริ่มหรือไม่ตอบ
+ลองถาม `ตลาดหุ้นคืออะไร`, `mindset`, `DCA คืออะไร` และ `ETF ต่างจาก DR อย่างไร` คำตอบควรมีเลขหน้าอ้างอิง และกด "ดูข้อความต้นฉบับจากคู่มือ" เพื่อตรวจได้ ตรวจ Cloud logs หากแอปไม่เริ่มหรือไม่ตอบ
 
 การแก้ไฟล์ในเครื่องยังไม่ขึ้นเว็บจนกว่าจะ commit และ push ไปที่ branch ที่ deploy ไว้

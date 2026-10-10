@@ -1,24 +1,32 @@
-"""Local hybrid retrieval over page-addressable PDF text."""
+"""Local hybrid retrieval for Thai/English text without a word segmenter.
+
+Three signals are combined for every chunk:
+
+* exact phrase match: the user's key words appear verbatim (after normalising
+  spaces, punctuation and case). This is what makes "any word from the book"
+  findable.
+* BM25 over character 2/3-grams: robust keyword ranking for Thai, which has no
+  spaces between words.
+* TF-IDF cosine over character 2-4-grams: tolerant of small spelling or OCR
+  differences.
+"""
 from __future__ import annotations
 
-import math
 import re
 import unicodedata
 from dataclasses import dataclass
 
-from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.preprocessing import normalize
 
 
 def normalize_text(value: str) -> str:
-    """Create one retrieval form for Thai text, spacing, punctuation, and zero-width chars.
-
-    This is deliberately used for both corpus and queries.  For example
-    ``แรง ขาย ?``, ``แรง-ขาย`` and ``แรงขาย!!!`` become the same search form.
-    """
+    """One search form for corpus and queries: lower case, no spaces/punctuation."""
     text = unicodedata.normalize("NFKC", str(value or "").lower())
-    text = re.sub(r"[\s\u200b\u200c\u200d\ufeff]+", "", text)
-    return re.sub(r"[^\w\u0e00-\u0e7f]", "", text)
+    text = text.replace("ํา", "ำ")  # NIKHAHIT + SARA AA == SARA AM
+    text = re.sub(r"[\s​‌‍﻿]+", "", text)
+    return re.sub(r"[^\w฀-๿]", "", text)
 
 
 def contains_term(text: str, term: str) -> bool:
@@ -34,104 +42,108 @@ def contains_term(text: str, term: str) -> bool:
     return bool(re.search(pattern, text, re.IGNORECASE))
 
 
-def char_tokens(value: str, width: int = 3) -> list[str]:
-    """Character tokens work for Thai without requiring a word-segmentation service."""
-    text = re.sub(r"\s+", "", normalize_text(value))
-    if len(text) <= width:
-        return [text] if text else []
-    return [text[i : i + width] for i in range(len(text) - width + 1)]
+# Question words and polite particles carry no topic information. Removing them
+# leaves the words the user is actually looking for.
+_THAI_FILLER = [
+    "ช่วยอธิบาย", "อธิบาย", "ช่วยบอก", "บอกหน่อย", "ขอทราบ", "อยากรู้", "อยากทราบ", "ช่วย", "แนะนำ",
+    "คืออะไร", "หมายถึงอะไร", "หมายถึง", "แปลว่าอะไร", "แปลว่า", "ความหมายของ", "ความหมาย",
+    "อย่างไรบ้าง", "อย่างไร", "ยังไงบ้าง", "ยังไง", "อะไรบ้าง", "อะไร", "มีกี่แบบ", "มีกี่ประเภท", "กี่แบบ", "กี่ประเภท",
+    "มีอะไรบ้าง", "มีอะไร", "ทำไม", "เพราะอะไร", "ได้ไหม", "ไหม", "มั้ย", "หรือไม่", "หรือเปล่า", "เท่าไร", "เท่าไหร่",
+    "ครับ", "ค่ะ", "คะ", "นะคะ", "นะครับ", "จ้า", "หน่อย", "บ้าง", "เกี่ยวกับ", "คือ",
+]
+_ENGLISH_FILLER = ["what is", "what are", "what", "how to", "how", "explain", "meaning of", "is", "are", "the", "of", "a", "an"]
+_FILLER_RE = re.compile(
+    "|".join(sorted((re.escape(w) for w in _THAI_FILLER), key=len, reverse=True))
+    + "|" + "|".join(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])" for w in sorted(_ENGLISH_FILLER, key=len, reverse=True)),
+    re.IGNORECASE,
+)
+# Thai connectives used as extra split points (the unsplit phrase is kept too).
+_CONNECTIVE_RE = re.compile(r"ของ|และ|กับ|หรือ|ระหว่าง|ต่างจาก|เทียบ|ใน|ที่")
+
+
+def key_phrases(query: str) -> list[str]:
+    """Return normalised phrases from the query worth matching verbatim."""
+    cleaned = _FILLER_RE.sub(" ", query)
+    phrases: list[str] = []
+
+    def add(value: str) -> None:
+        value = normalize_text(value)
+        if len(value) >= 2 and value not in phrases:
+            phrases.append(value)
+
+    add(cleaned)
+    for part in re.split(r"[\s,/?!()\"'“”]+", cleaned):
+        add(part)
+        for piece in _CONNECTIVE_RE.split(part):
+            if len(normalize_text(piece)) >= 3:
+                add(piece)
+    return phrases
 
 
 @dataclass(frozen=True)
 class Record:
     record_id: str
-    question: str
-    answer: str
-    keywords: str
-    source: str
     page: str
-    excerpt: str
-    search_text: str
-    source_page: str = ""
+    heading: str
+    text: str           # shown to the user and the LLM
+    search_text: str    # indexed for retrieval
+    source: str = ""
 
 
 @dataclass(frozen=True)
 class Hit:
     record: Record
-    dense_score: float
-    bm25_score: float
-    rrf_score: float
+    score: float
+    phrase_score: float = 0.0
 
 
 class HybridRetriever:
     def __init__(self, records: list[Record]) -> None:
         if not records:
-            raise ValueError("ไม่พบข้อความที่ค้นหาได้จากคู่มือ PDF")
+            raise ValueError("ไม่พบข้อความที่ค้นหาได้จากคู่มือ")
         self.records = records
-        texts = [normalize_text(r.search_text) for r in records]
-        # Character n-grams handle Thai without relying on exact word spacing.
-        self.vectorizer = TfidfVectorizer(analyzer="char", ngram_range=(2, 5), min_df=1, sublinear_tf=True, lowercase=False)
-        self.matrix = normalize(self.vectorizer.fit_transform(texts))
-        self.docs = [char_tokens(t) for t in texts]
-        self.doc_lengths = [len(d) or 1 for d in self.docs]
-        self.avgdl = sum(self.doc_lengths) / len(self.doc_lengths)
-        self.df: dict[str, int] = {}
-        for doc in self.docs:
-            for token in set(doc):
-                self.df[token] = self.df.get(token, 0) + 1
+        self.norm = [normalize_text(r.search_text) for r in records]
+        self.tfidf = TfidfVectorizer(analyzer="char", ngram_range=(2, 4), sublinear_tf=True, lowercase=False)
+        self.tfidf_matrix = normalize(self.tfidf.fit_transform(self.norm))
 
-    def _bm25(self, question: str) -> list[float]:
-        query = char_tokens(question)
-        n, k1, b = len(self.docs), 1.5, 0.75
-        scores = []
-        for doc, dl in zip(self.docs, self.doc_lengths):
-            counts: dict[str, int] = {}
-            for token in doc:
-                counts[token] = counts.get(token, 0) + 1
-            score = 0.0
-            for token in query:
-                if token not in counts:
-                    continue
-                idf = math.log(1 + (n - self.df.get(token, 0) + 0.5) / (self.df.get(token, 0) + 0.5))
-                tf = counts[token]
-                score += idf * tf * (k1 + 1) / (tf + k1 * (1 - b + b * dl / self.avgdl))
-            scores.append(score)
+        # BM25 on character 2/3-grams, computed with sparse matrices.
+        self.counter = CountVectorizer(analyzer="char", ngram_range=(2, 3), lowercase=False)
+        tf = self.counter.fit_transform(self.norm).tocsr().astype(np.float64)
+        n_docs = tf.shape[0]
+        df = np.bincount(tf.indices, minlength=tf.shape[1])
+        self.idf = np.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+        lengths = np.asarray(tf.sum(axis=1)).ravel()
+        k1, b = 1.4, 0.75
+        denom_per_doc = k1 * (1 - b + b * lengths / lengths.mean())
+        tf = tf.tocoo()
+        weights = tf.data * (k1 + 1) / (tf.data + denom_per_doc[tf.row])
+        from scipy.sparse import csr_matrix
+        self.bm25_matrix = csr_matrix((weights, (tf.row, tf.col)), shape=tf.shape)
+
+    def _phrase_scores(self, query: str) -> np.ndarray:
+        scores = np.zeros(len(self.records))
+        for phrase in key_phrases(query):
+            # Longer phrases are more specific; a 2-char hit is weak evidence.
+            weight = min(len(phrase), 12) / 12
+            for i, text in enumerate(self.norm):
+                count = text.count(phrase)
+                if count:
+                    scores[i] += weight * (1 + 0.15 * min(count - 1, 4))
         return scores
 
-    def search(self, question: str, top_k: int = 24) -> list[Hit]:
-        q = self.vectorizer.transform([normalize_text(question)])
-        dense = (self.matrix @ q.T).toarray().ravel()
-        bm25 = self._bm25(question)
-        dense_rank = sorted(range(len(self.records)), key=lambda i: dense[i], reverse=True)
-        bm25_rank = sorted(range(len(self.records)), key=lambda i: bm25[i], reverse=True)
-        rrf: dict[int, float] = {}
-        for rank, index in enumerate(dense_rank[:30], 1):
-            rrf[index] = rrf.get(index, 0) + 1 / (60 + rank)
-        for rank, index in enumerate(bm25_rank[:30], 1):
-            rrf[index] = rrf.get(index, 0) + 1 / (60 + rank)
-        # First collect a wider set of passages. The LLM reranker needs the
-        # right page to be present even when an adjacent chunk scores higher.
-        pool_size = max(80, top_k * 4)
-        chosen = set(dense_rank[:pool_size]) | set(sorted(rrf, key=rrf.get, reverse=True)[:pool_size])
+    @staticmethod
+    def _scale(values: np.ndarray) -> np.ndarray:
+        top = values.max()
+        return values / top if top > 0 else values
 
-        # The source PDFs are paginated books. Rank at page level so several
-        # useful passages on one page reinforce each other instead of returning
-        # multiple near-duplicate chunks as separate candidates.
-        pages: dict[tuple[str, str], list[int]] = {}
-        for index in chosen:
-            record = self.records[index]
-            pages.setdefault((record.source, record.page), []).append(index)
-
-        page_hits: list[tuple[float, int]] = []
-        for indexes in pages.values():
-            indexes.sort(key=lambda i: rrf.get(i, 0.0), reverse=True)
-            weights = (1.0, 0.18, 0.08)
-            page_score = sum(weight * rrf.get(i, 0.0) for weight, i in zip(weights, indexes))
-            # Return the most relevant passage from the page, while its score
-            # reflects corroborating matches elsewhere on that same page.
-            page_hits.append((page_score, indexes[0]))
-        page_hits.sort(key=lambda item: item[0], reverse=True)
-        return [
-            Hit(self.records[index], float(dense[index]), float(bm25[index]), float(page_score))
-            for page_score, index in page_hits[:top_k]
-        ]
+    def search(self, query: str, top_k: int = 10) -> list[Hit]:
+        normalized = normalize_text(query)
+        if not normalized:
+            return []
+        dense = (self.tfidf_matrix @ self.tfidf.transform([normalized]).T).toarray().ravel()
+        q_counts = self.counter.transform([normalized]).toarray().ravel()
+        bm25 = self.bm25_matrix @ (self.idf * (q_counts > 0))
+        phrase = self._phrase_scores(query)
+        combined = 0.35 * self._scale(dense) + 0.35 * self._scale(bm25) + 0.6 * self._scale(phrase)
+        order = np.argsort(-combined)[:top_k]
+        return [Hit(self.records[i], float(combined[i]), float(phrase[i])) for i in order if combined[i] > 0]

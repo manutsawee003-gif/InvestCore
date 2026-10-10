@@ -1,32 +1,36 @@
-# InvestCore — PDF-grounded investment education chatbot
+# InvestCore — แชตบอตความรู้การลงทุนจากคู่มือ
 
-InvestCore answers from these two supplied SET e-books only:
+InvestCore ตอบคำถามจาก `Datasetหุ้น.pdf` (134 หน้า) โดยใช้ Typhoon เป็นโมเดลภาษา
 
-- `TSI_eBook_028_Inv_คู่มือ21-DayChallenge(1).pdf`
-- `TSI_eBook_062_Inv_Playbook-21-Day-Challenge-Foreign-Investment.pdf`
+## ทำงานอย่างไร
 
-The 300-question Excel workbook is an evaluation set. It is not loaded into
-the chatbot and cannot influence an answer.
+1. **ฐานความรู้** `data/knowledge.md` สร้างด้วย `build_knowledge.py`
+   - OCR ภาพของทุกหน้าด้วย `typhoon-ocr-v1.5` เพราะหัวข้อในอินโฟกราฟิกใช้ฟอนต์ตกแต่งที่ดึงเป็นข้อความไม่ได้
+   - แนบข้อความจากชั้นข้อความ PDF ต่อท้าย หลังซ่อมสระ "ำ" ที่เสีย (เช่น "จ าเป็น" → "จำเป็น")
+   - ผล OCR รายหน้าเก็บใน `data/ocr_pages/` จึงสร้างใหม่ได้โดยไม่ต้อง OCR ซ้ำ
+2. **ค้นหา** `retriever.py` รวม 3 สัญญาณ: จับคำตรงตัว, BM25 แบบตัวอักษร, TF-IDF แบบตัวอักษร
+   ทำงานกับภาษาไทยที่ไม่มีช่องว่างได้โดยไม่ต้องตัดคำ
+3. **ตอบ** `rag_service.py` ให้โมเดลแปลงคำถามเป็นคำค้นและคำพ้องความหมาย ค้น 8 ชิ้นที่เกี่ยวข้องที่สุด
+   แล้วให้โมเดลตอบจากชิ้นเหล่านั้นพร้อมเลขหน้า
 
-## Run locally
+## รันในเครื่อง
 
-1. Copy `.env.example` to `.env` and set `TYPHOON_API_KEY`.
-2. Install packages: `py -m pip install -r requirements.txt`
-3. Run the app: `py -m streamlit run app.py`
+```powershell
+copy .env.example .env      # แล้วใส่ TYPHOON_API_KEY
+py -m pip install -r requirements.txt
+py -m streamlit run app.py
+```
 
-The searchable knowledge file is `data/Datasetหุ้น_ครบทุกหน้า.md`, containing
-pages 1–134 in order. The combined `Datasetหุ้น.pdf` is included in this
-repository so page references can be checked in local and cloud deployments.
-See `DEPLOY.md` for the current Streamlit Community Cloud steps.
+## สร้างฐานความรู้ใหม่ (เมื่อเปลี่ยน PDF)
 
-## Answer policy
+```powershell
+py build_knowledge.py --force
+py evaluate.py              # สุ่มวลีจากคู่มือ 300 วลี แล้ววัดว่าค้นเจอกี่ %
+py -m unittest discover tests
+```
 
-- Answers show a short interpretation and cite the combined PDF page from
-  1–134, with the corresponding page in the original PDF in parentheses. The
-  retrieved passage is available in a collapsible control.
-- The chatbot does not recommend a specific security to buy, sell, or hold.
-- Investment questions outside the two books receive a scope-aware response.
-- The most recent chat turns are used to resolve follow-up questions.
+## นโยบายคำตอบ
 
-If retrieval or source verification is unavailable, InvestCore declines to
-summarize rather than show a possibly unrelated passage as the answer.
+- ตอบจากข้อความในคู่มือเท่านั้น และระบุเลขหน้า PDF
+- ไม่แนะนำให้ซื้อ ขาย หรือถือหุ้นตัวใดตัวหนึ่ง
+- ถ้าไม่มีข้อมูลในคู่มือ จะบอกว่าไม่พบและแนะนำหัวข้อใกล้เคียง

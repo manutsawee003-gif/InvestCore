@@ -1,7 +1,7 @@
 streamlit>=1.40
 openai>=1.0
-pandas>=2.2
-openpyxl>=3.1
+numpy>=1.26
+scipy>=1.11
 scikit-learn>=1.4
 python-dotenv>=1.0
 PyMuPDF>=1.24

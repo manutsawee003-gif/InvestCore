@@ -1,185 +1,120 @@
-"""The two supplied SET e-books form InvestCore's answerable knowledge base."""
+"""Load data/knowledge.md (built by build_knowledge.py) into searchable chunks."""
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-import fitz
+from retriever import HybridRetriever, Hit, Record
 
-from retriever import HybridRetriever, Record, Hit, contains_term, normalize_text
-
-PDF_PREFIXES = ("TSI_eBook_028_Inv_", "TSI_eBook_062_Inv_")
-
-
-def split_page(text: str, limit: int = 1050) -> list[str]:
-    """Keep original PDF words while grouping short visual lines into context."""
-    paragraphs = [re.sub(r"\s+", " ", part).strip() for part in text.splitlines()]
-    paragraphs = [part for part in paragraphs if part]
-    chunks: list[str] = []
-    current = ""
-    for part in paragraphs:
-        if current and len(current) + len(part) + 1 > limit:
-            chunks.append(current)
-            current = current[-180:] + " " + part
-        else:
-            current = f"{current} {part}".strip()
-    if current:
-        chunks.append(current)
-    return chunks
-
-
-def records_from_markdown(markdown_path: Path, sources: list[Path]) -> list[Record]:
-    """Index the user-supplied page-by-page Markdown with PDF page mappings."""
-    content = markdown_path.read_text(encoding="utf-8")
-    page_pattern = re.compile(r"(?ms)^## หน้า PDF (\d+)\s*\n(.*?)(?=^## หน้า PDF \d+\s*$|\Z)")
-    pages = [(int(number), body) for number, body in page_pattern.findall(content)]
-    if len(pages) != 134 or [number for number, _ in pages] != list(range(1, 135)):
-        raise ValueError("Markdown ต้องมีหน้า PDF ครบ 1–134 และเรียงตามลำดับ")
-
-    if len(sources) == 1:
-        with fitz.open(sources[0]) as document:
-            first_source_pages = document.page_count
-        expected_total = first_source_pages
-    else:
-        with fitz.open(sources[0]) as first_document:
-            first_source_pages = first_document.page_count
-        with fitz.open(sources[1]) as second_document:
-            expected_total = first_source_pages + second_document.page_count
-    if expected_total != 134:
-        raise ValueError(f"จำนวนหน้า PDF ต้นทางไม่ตรงกับ Markdown: {expected_total}")
-
-    records: list[Record] = []
-    serial = 1
-    for combined_page, raw_body in pages:
-        if len(sources) == 1 or combined_page <= first_source_pages:
-            source = sources[0]
-            pdf_page = combined_page
-        else:
-            source = sources[1]
-            pdf_page = combined_page - first_source_pages
-        body_lines = []
-        for line in raw_body.splitlines():
-            line = re.sub(r"^\s{0,3}#{1,6}\s*", "", line)
-            if "หน้านี้ไม่มีข้อความที่คัดลอกได้จาก PDF" in line or "ไม่มีข้อความที่ดึงได้จากหน้านี้" in line:
-                continue
-            body_lines.append(line)
-        page_text = "\n".join(body_lines).strip()
-        headings = [
-            match.group(1).strip(" ?!：:") for match in re.finditer(r"(?m)^\s*#{1,6}\s+(.{2,65})$", raw_body)
-        ]
-        headings = [heading for heading in headings if heading and "หน้า PDF" not in heading]
-        for chunk in split_page(page_text):
-            if len(chunk) < 12:
-                continue
-            page_title = f"PDF page {pdf_page}"
-            records.append(Record(
-                record_id=f"MD-{serial}", question=" | ".join(headings) or page_title, answer=chunk,
-                keywords="", source=source.name, page=str(combined_page), excerpt=chunk,
-                search_text=f"{chunk} {' '.join(headings)}", source_page=str(pdf_page),
-            ))
-            serial += 1
-    if not records:
-        raise ValueError("ไม่พบข้อความที่ค้นหาได้ใน Markdown")
-    return records
+DATA = Path(__file__).resolve().parent / "data"
+KNOWLEDGE_FILES = ("knowledge.md", "knowledge_ocr.md")  # newest first
+NATIVE_HEADING = "### ข้อความจากชั้นข้อความ PDF"
+SOURCE_NAME = "Datasetหุ้น.pdf"
 
 
 def page_reference(record: Record) -> str:
-    """Cite the continuous 134-page set and map it to its original PDF file."""
-    if record.source_page:
-        return f"หน้า PDF รวม {record.page} (ไฟล์นี้หน้า {record.source_page})"
     return f"หน้า PDF {record.page}"
 
 
-class PDFKnowledgeBase:
-    def __init__(self, directory: str | Path) -> None:
-        folder = Path(directory)
-        paths = [next(iter(sorted(folder.glob(f"{prefix}*.pdf"))), None) for prefix in PDF_PREFIXES]
-        if any(path is None for path in paths):
-            combined = next(iter(sorted(folder.glob("Datasetหุ้น.pdf"))), None)
-            if combined is None:
-                raise FileNotFoundError("Required InvestCore PDF files were not found")
-            paths = [combined]
+def _clean(markdown: str) -> str:
+    text = markdown.replace("&amp;", "&")
+    text = re.sub(r"</?figure>", "", text)
+    text = re.sub(r"<[^>]+>", " ", text)          # stray HTML from OCR tables
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
-        source_markdown = Path(__file__).resolve().parent / "data" / "Datasetหุ้น_ครบทุกหน้า.md"
-        if not source_markdown.exists():
-            raise FileNotFoundError("The page-by-page Datasetหุ้น_ครบทุกหน้า.md was not found")
-        # Prefer the OCR-enriched file when it has been generated. It keeps the
-        # same page mapping, while making image-only PDF pages retrievable.
-        ocr_markdown = source_markdown.with_name("knowledge_ocr.md")
-        if ocr_markdown.exists():
-            source_markdown = ocr_markdown
-        records = records_from_markdown(source_markdown, paths)
-        self.retriever = HybridRetriever(records)
-        foreign_records = [record for record in records if "062" in record.source]
-        if not foreign_records and len(paths) == 1:
-            foreign_records = [record for record in records if int(record.page) > 60]
-        self.foreign_retriever = HybridRetriever(foreign_records)
 
-    @staticmethod
-    def has_exact_heading(hit: Hit, term: str) -> bool:
-        return any(normalize_text(title) == normalize_text(term) for title in hit.record.question.split(" | "))
+def split_sections(text: str, limit: int = 900, overlap: int = 150) -> list[tuple[str, str]]:
+    """Split markdown into (heading, body) chunks of roughly `limit` characters."""
+    sections: list[tuple[str, list[str]]] = [("", [])]
+    for line in text.splitlines():
+        heading = re.match(r"^\s*#{1,6}\s+(.+)", line)
+        if heading:
+            sections.append((heading.group(1).strip(), [line]))
+        else:
+            sections[-1][1].append(line)
 
-    @staticmethod
-    def has_definition(hit: Hit, term: str) -> bool:
-        return bool(contains_term(hit.record.answer, term) and re.search(r"(?:คือ|หมายถึง|ย่อมาจาก|กรอบความคิด|กรอบควำมคิด)", hit.record.answer))
+    chunks: list[tuple[str, str]] = []
+    current_heading, current = "", ""
+    for heading, lines in sections:
+        body = "\n".join(lines).strip()
+        if not body:
+            continue
+        if current and len(current) + len(body) > limit:
+            chunks.append((current_heading, current))
+            current_heading, current = heading, ""
+        current_heading = current_heading or heading
+        current = f"{current}\n\n{body}".strip()
+        while len(current) > limit * 1.6:   # one very long section
+            cut = current.rfind("\n", 0, limit) if current.rfind("\n", 0, limit) > limit // 2 else limit
+            chunks.append((current_heading, current[:cut]))
+            current = current[max(cut - overlap, 0):]
+    if current:
+        chunks.append((current_heading, current))
+    return chunks
 
-    def clarification_options(self, term: str) -> list[str]:
-        options = []
-        for record in self.retriever.records:
-            for phrase in re.findall(re.escape(term) + r"(?:ของ|จาก)[ก-๙A-Za-z/]{2,30}", record.answer):
-                if phrase.endswith(("ได้", "ที่", "การที่", "เพิ่มขึ้น")) or len(phrase) > 36:
+
+def load_records(path: Path) -> list[Record]:
+    content = path.read_text(encoding="utf-8")
+    pages = re.findall(r"(?ms)^## หน้า PDF (\d+)\s*\n(.*?)(?=^## หน้า PDF \d+\s*$|\Z)", content)
+    if not pages:
+        raise ValueError(f"No '## หน้า PDF N' sections found in {path}")
+
+    records: list[Record] = []
+    for number, body in pages:
+        ocr, _, native = body.partition(NATIVE_HEADING)
+        if "### OCR text" in ocr:                   # legacy knowledge_ocr.md layout
+            native, _, ocr = ocr.partition("### OCR text")
+        ocr, native = _clean(ocr), _clean(native)
+        titles = [h for h in re.findall(r"(?m)^\s*#{1,2}\s+(.+)$", ocr) if len(h) < 80][:3]
+        page_title = " / ".join(titles)
+        for kind, text in (("ocr", ocr), ("pdf", native)):
+            for heading, chunk in split_sections(text):
+                if len(re.sub(r"\W", "", chunk)) < 15:
                     continue
-                if phrase not in options:
-                    options.append(phrase)
-        return options
+                records.append(Record(
+                    record_id=f"p{number}-{kind}-{len(records)}",
+                    page=number,
+                    heading=heading or page_title,
+                    text=chunk,
+                    search_text=f"{page_title}\n{heading}\n{chunk}",
+                    source=SOURCE_NAME,
+                ))
+    return records
 
-    @staticmethod
-    def topic_term(query: str) -> str | None:
-        """Recognize a short topic request without inventing a topic from a sentence."""
-        text = re.sub(r"\s+", " ", query).strip(" ?!？。")
-        text = re.sub(r"^(?:ช่วย)?(?:อธิบาย|บอก|ขอความหมายของ|ความหมายของ)\s*", "", text, flags=re.I)
-        text = re.sub(r"\s*(?:คือ(?:อะไร)?|หมายถึง(?:อะไร)?|แปลว่าอะไร|คือยังไง)\s*$", "", text, flags=re.I).strip()
-        if not text or len(text) > 48 or len(text.split()) > 5:
-            return None
-        if text in {"ดีไหม", "อันนี้", "อันนั้น", "อะไร", "ทำยังไง", "ยังไง", "คืออะไร"}:
-            return None
-        return text
 
-    def search(self, query: str):
-        # These are named products/topics whose detailed treatment is in the
-        # foreign-investment playbook.  Filtering avoids a brief mention of
-        # the same acronym in the Thai-stock book displacing the explanation.
-        product = re.search(r"\b(ETF|DR|DW|FIF|MSCI|FCD|FCN|ELN)\b", query, re.IGNORECASE)
-        term = self.topic_term(query)
-        queries = [query]
-        if term:
-            for variant in (term, f"{term} คืออะไร", f"ความหมายของ {term}"):
-                if normalize_text(variant) not in {normalize_text(q) for q in queries}:
-                    queries.append(variant)
-        if product and term and normalize_text(term) == normalize_text(product.group(1)):
-            queries.append(f"{term} ย่อมาจาก")
-        # Thai users often say “ค่าเงิน” while the handbook consistently uses
-        # “อัตราแลกเปลี่ยน”. Add both handbook terms to retrieval for this topic.
-        if re.search(r"ค่าเงิน|อัตราแลกเปลี่ยน|แลกเปลี่ยนเงินตรา|exchange rate|currency risk", query, re.IGNORECASE):
-            queries.append(f"{query} อัตราแลกเปลี่ยน ค่าเงิน ผลตอบแทน การเปลี่ยนแปลง")
-        retriever = self.foreign_retriever if re.search(r"\b(?:ETF|DR|DW|FIF|MSCI|FCD|FCN|ELN)\b|ต่างประเทศ|offshore|fund flow|ค่าเงิน|อัตราแลกเปลี่ยน|exchange rate|currency risk", query, re.IGNORECASE) else self.retriever
-        merged: dict[tuple[str, str], tuple[float, Hit]] = {}
-        for query_index, variant in enumerate(queries):
-            weight = 1.0 if query_index == 0 else 0.45
-            for rank, hit in enumerate(retriever.search(variant, top_k=24), 1):
-                key = (hit.record.source, hit.record.page)
-                previous_score, previous_hit = merged.get(key, (0.0, hit))
-                # Keep the best original passage on a page; variants only help discovery.
-                representative = hit if query_index == 0 or hit.dense_score > previous_hit.dense_score else previous_hit
-                merged[key] = (previous_score + weight / (60 + rank), representative)
-        results = []
-        for score, hit in merged.values():
-            if term:
-                titles = [title.strip() for title in hit.record.question.split(" | ")]
-                if any(normalize_text(title) == normalize_text(term) for title in titles):
-                    score += 0.025
-                if contains_term(hit.record.answer, term) and re.search(r"(?:คือ|หมายถึง|ย่อมาจาก|กรอบความคิด|กรอบควำมคิด)", hit.record.answer):
-                    score += 0.010
-            results.append((score, hit))
-        results.sort(key=lambda item: item[0], reverse=True)
-        return [Hit(hit.record, hit.dense_score, hit.bm25_score, score) for score, hit in results[:24]]
+class PDFKnowledgeBase:
+    def __init__(self, directory: str | Path | None = None) -> None:
+        data = Path(directory) / "data" if directory and (Path(directory) / "data").is_dir() else DATA
+        path = next((data / name for name in KNOWLEDGE_FILES if (data / name).exists()), None)
+        if path is None:
+            raise FileNotFoundError("data/knowledge.md not found. Run: py build_knowledge.py")
+        self.path = path
+        self.records = load_records(path)
+        self.retriever = HybridRetriever(self.records)
+
+    def search(self, query: str | list[str], top_k: int = 8, per_page: int = 2) -> list[Hit]:
+        """Search one or more query variants and return diverse, de-duplicated chunks."""
+        queries = [query] if isinstance(query, str) else [q for q in query if q and q.strip()]
+        best: dict[str, Hit] = {}
+        for index, variant in enumerate(queries):
+            weight = 1.0 if index == 0 else 0.85
+            for hit in self.retriever.search(variant, top_k=top_k * 4):
+                scored = Hit(hit.record, hit.score * weight, hit.phrase_score)
+                previous = best.get(hit.record.record_id)
+                # A chunk found by several variants is more likely relevant.
+                if previous:
+                    scored = Hit(hit.record, max(previous.score, scored.score) + 0.1 * min(previous.score, scored.score),
+                                 max(previous.phrase_score, hit.phrase_score))
+                best[hit.record.record_id] = scored
+        ranked = sorted(best.values(), key=lambda h: h.score, reverse=True)
+        results: list[Hit] = []
+        per_page_count: dict[str, int] = {}
+        for hit in ranked:
+            if per_page_count.get(hit.record.page, 0) >= per_page:
+                continue
+            per_page_count[hit.record.page] = per_page_count.get(hit.record.page, 0) + 1
+            results.append(hit)
+            if len(results) >= top_k:
+                break
+        return results
